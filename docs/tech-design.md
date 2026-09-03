@@ -38,9 +38,9 @@
 
 | 组件 | 选择 | 理由 | 不用的替代方案 |
 | --- | --- | --- | --- |
-| 语言/运行时 | TypeScript + Node.js (≥20) | 生态成熟；HTTP 客户端与异步模型齐备；作业不限栈 | Go（迭代慢）、Python（类型表达弱） |
+| 语言/运行时 | TypeScript + Node.js (≥22.5) | 生态成熟；HTTP 客户端与异步模型齐备；作业不限栈 | Go（迭代慢）、Python（类型表达弱） |
 | Web 框架 | Hono | 轻量、类型推导好、单机足够 | NestJS（MVP 过重） |
-| 任务存储 | SQLite（WAL） | 事务 + 唯一索引 + 原子领取，零外部依赖；万级 TPS 远超 MVP 需求 | Postgres（独立部署过重）、内存队列（违背可靠性目标） |
+| 任务存储 | SQLite（WAL），驱动用 Node 内置 `node:sqlite` | 事务 + 唯一索引 + 原子领取，零外部依赖；万级 TPS 远超 MVP 需求 | better-sqlite3（需原生编译，Node 26 下无预编译产物）、Postgres（独立部署过重）、内存队列（违背可靠性目标） |
 | HTTP 客户端 | undici（Node 内置 fetch） | 零依赖，超时控制齐全 | axios |
 | 告警（MVP） | 日志 + 指标计数点 | 告警通道（PagerDuty/钉钉等）属部署项，MVP 只保证信号可观测 | 直接对接具体告警平台（绑定部署环境） |
 
@@ -138,7 +138,8 @@ CREATE TABLE notifications (
   ack_deadline    INTEGER,                     -- AWAITING_ACK 超时时刻（epoch ms）
   ack_result      TEXT,                        -- 回执原文摘要（成功为空）
   created_at      INTEGER NOT NULL,
-  completed_at    INTEGER
+  completed_at    INTEGER,
+  updated_at      INTEGER NOT NULL                -- 存活心跳：孤儿 IN_FLIGHT 检测（§4.4）
 );
 CREATE INDEX idx_due ON notifications(status, next_retry_at) WHERE status IN ('PENDING','RETRYING');
 CREATE INDEX idx_ack_due ON notifications(status, ack_deadline) WHERE status = 'AWAITING_ACK';
@@ -199,7 +200,7 @@ Worker 重启时恢复扫描：`UPDATE notifications SET status=RETRYING, next_r
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | idempotency_key | string(≤128) | 是 | 业务方生成的全局唯一幂等键 |
-| target_url | string(url) | 是 | 供应商通知地址，MVP 仅允许 https |
+| target_url | string(url) | 是 | 供应商通知地址，仅允许 https（`localhost`/`127.0.0.1` 放行以便本地联调） |
 | method | string | 否 | `POST`（默认）/ `PUT` / `PATCH` |
 | headers | object | 否 | 透传 Header（JSON 对象），禁止覆盖 `Host`/`Content-Length` |
 | body | any(json) | 否 | 透传请求体，原样序列化 |
@@ -282,3 +283,17 @@ PENDING ──claim──▶ IN_FLIGHT ─┬─ 2xx + ack_mode=http_2xx ──�
 3. **BullMQ + Redis**：Redis 默认持久化不满足「受理即持久」（D4）。
 4. **回调业务方（webhook 回执给业务系统）**：业务方不消费返回值；状态查询已覆盖。
 5. **ack 超时自动无限重投**：假送达场景（供应商实际处理成功但回执丢失）下自动重投会放大副作用；MVP 选择告警 + 人工，v1.1 再提供受控重放。
+
+## 8. 实现与验证
+
+代码结构（5 个源文件，遵循「简单代码、单用途函数内联、用标准库」原则）：
+
+```
+src/db.ts      # node:sqlite 打开 + 建表 + 两条部分索引（Node ≥22.5 内置，零原生依赖）
+src/store.ts   # 全部 SQL 与状态机迁移
+src/api.ts     # 三个路由 + 手写校验
+src/worker.ts  # deliverTick（领取→投递→分类落库）+ ackSweep（超时扫描）
+src/index.ts   # 启动入口
+```
+
+验证：`npm run smoke` 进程内启动 mock 供应商 + 服务，18 条断言覆盖本文档主路径——http_2xx/callback 两种确认模式、503 退避、400 死信、幂等三种路径（重复/冲突）、校验 422、404/409 错误路径。运行结果：18 assertions passed。

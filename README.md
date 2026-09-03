@@ -13,4 +13,23 @@
 
 ## 一句话设计
 
-统一受理外部 API 通知请求，先持久化后返回回执，由 Worker 以 **at-least-once** 语义异步投递，失败按分类退避重试、耗尽进死信。MVP：TypeScript + Hono + SQLite，单进程。
+统一受理外部 API 通知请求，先持久化后返回回执，由 Worker 以 **at-least-once** 语义异步投递，失败按分类退避重试、耗尽进死信。MVP：TypeScript + Hono + SQLite（`node:sqlite`），单进程。
+
+## 快速开始
+
+```bash
+npm install
+npm run smoke   # 进程内 mock 供应商 + 18 条断言端到端验证
+npm start       # 启动服务，默认 :3100（PORT 可覆盖，db 默认 notifyhub.db）
+```
+
+## 代码结构
+
+```
+src/db.ts      # SQLite 打开 + 建表（WAL、两条部分索引）
+src/store.ts   # 全部 SQL 与状态机迁移
+src/api.ts     # 受理 / 查询 / ack 三个路由
+src/worker.ts  # 投递循环 + ack 超时扫描
+src/index.ts   # 启动入口
+scripts/smoke.ts  # 端到端验证脚本
+```
