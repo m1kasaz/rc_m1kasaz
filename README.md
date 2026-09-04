@@ -1,5 +1,7 @@
 # rc_m1kasaz
 
+拷打过程以及思考：https://app.notion.com/p/rc_m1kasaz-3d068cd6eb77801788c3c0463eca7915?source=copy_link
+
 企业内部 **API 通知系统（NotifyHub）** 设计与实现 —— AI Coding 作业。
 
 ## 文档索引
