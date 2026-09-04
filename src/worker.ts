@@ -23,7 +23,8 @@ async function deliver(db: DB, n: Notification): Promise<void> {
   try {
     res = await fetch(n.target_url, {
       method: n.method,
-      headers: JSON.parse(n.headers),
+      // X-Notify-Id 供供应商关联回执（故意覆盖同名透传头）
+      headers: { ...JSON.parse(n.headers), "x-notify-id": n.id },
       body: n.body ?? undefined,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -36,7 +37,11 @@ async function deliver(db: DB, n: Notification): Promise<void> {
     markDead(db, n.id, n.attempts + 1, `HTTP ${res.status}`);
     return console.error(`[alert:critical] dead notify_id=${n.id} error=HTTP ${res.status}`);
   }
-  if (n.ack_mode === "callback") return void markDelivered(db, n.id);
+  if (n.ack_mode === "callback") {
+    // 同步推进 DELIVERED → AWAITING_ACK，关闭 1s 轮询窗口；循环里的 promoteDelivered 保留作崩溃恢复
+    markDelivered(db, n.id);
+    return void promoteDelivered(db);
+  }
   markAcked(db, n.id);
 }
 

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "vendor": "tsx scripts/mock-vendor.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

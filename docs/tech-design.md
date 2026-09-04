@@ -200,9 +200,9 @@ Worker 重启时恢复扫描：`UPDATE notifications SET status=RETRYING, next_r
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | idempotency_key | string(≤128) | 是 | 业务方生成的全局唯一幂等键 |
-| target_url | string(url) | 是 | 供应商通知地址，仅允许 https（`localhost`/`127.0.0.1` 放行以便本地联调） |
+| target_url | string(url) | 是 | 供应商通知地址，仅允许 https（`localhost`/`127.0.0.1` 放行；测试环境可设 `NOTIFYHUB_ALLOW_HTTP=1` 特批） |
 | method | string | 否 | `POST`（默认）/ `PUT` / `PATCH` |
-| headers | object | 否 | 透传 Header（JSON 对象），禁止覆盖 `Host`/`Content-Length` |
+| headers | object | 否 | 透传 Header（JSON 对象），禁止覆盖 `Host`/`Content-Length`；系统会注入 `X-Notify-Id`（notify_id）供供应商关联回执，同名透传头被覆盖 |
 | body | any(json) | 否 | 透传请求体，原样序列化 |
 | ack_mode | string | 否 | `http_2xx`（默认）/ `callback`（D1：2xx 后置为 DELIVERED，等待业务回执） |
 
@@ -248,9 +248,11 @@ Worker 重启时恢复扫描：`UPDATE notifications SET status=RETRYING, next_r
 **出参**：
 - `200`：`{ "notify_id": "…", "status": "ACKED" }`（或 ACK_FAILED）
 - `404`：notify_id 不存在
-- `409`：`{ "error": "INVALID_STATE" }` — 当前非 AWAITING_ACK 态（如重复回执、http_2xx 模式任务），保证状态机不被非法迁移
+- `409`：`{ "error": "INVALID_STATE" }` — 当前处于 PENDING/RETRYING（请求尚未发出）或已终结状态（ACKED/ACK_FAILED/DEAD），保证状态机不被非法迁移
 
-**超时扫描**：独立定时器每秒扫描 `AWAITING_ACK AND ack_deadline < now` → warning 告警，状态保持滞留（MVP 人工处理）。
+**可接受 ack 的状态集合（竞速安全，v2.1 修订）**：`IN_FLIGHT` / `DELIVERED` / `AWAITING_ACK`。供应商的回执是独立 HTTP 调用，可能先于 worker 处理投递响应落地（三主机实测暴露），因此投递进行中的回执必须被接受；终态与未发出态拒绝。配合「worker 侧所有投递结果写库均带 `AND status='IN_FLIGHT'` 守卫」，ack 与投递结果谁后到谁失效，保证恰好一次迁移。
+
+**超时扫描**：独立定时器每秒扫描 `AWAITING_ACK AND ack_deadline < now` → warning 告警，状态保持滞留（MVP 人工处理）。`ack_deadline` 是告警线而非状态过期线——滞留期间迟到的真实回执仍被接受（TC-C3）。
 
 ### 5.4 状态机
 
@@ -265,6 +267,8 @@ PENDING ──claim──▶ IN_FLIGHT ─┬─ 2xx + ack_mode=http_2xx ──�
 ```
 
 对外暴露：`PENDING / RETRYING / DELIVERED / AWAITING_ACK / ACKED / ACK_FAILED / DEAD`；`IN_FLIGHT` 内部态（查询映射为 RETRYING/PENDING）。
+
+注：`DELIVERED → AWAITING_ACK` 在 worker 内同步完成（不再是独立 tick），循环中的 `promoteDelivered` 仅作两步写之间崩溃的恢复路径；ack 边可从 `IN_FLIGHT`/`DELIVERED`/`AWAITING_ACK` 任意态触发（见 §5.3 竞速说明）。
 
 ## 6. 演进路线
 
@@ -290,10 +294,13 @@ PENDING ──claim──▶ IN_FLIGHT ─┬─ 2xx + ack_mode=http_2xx ──�
 
 ```
 src/db.ts      # node:sqlite 打开 + 建表 + 两条部分索引（Node ≥22.5 内置，零原生依赖）
-src/store.ts   # 全部 SQL 与状态机迁移
-src/api.ts     # 三个路由 + 手写校验
-src/worker.ts  # deliverTick（领取→投递→分类落库）+ ackSweep（超时扫描）
+src/store.ts   # 全部 SQL 与状态机迁移（含竞速守卫 AND status='IN_FLIGHT'）
+src/api.ts     # 三个路由 + 手写校验（NOTIFYHUB_ALLOW_HTTP 测试特批）
+src/worker.ts  # deliverTick（领取→投递→分类落库，注入 X-Notify-Id 关联头）+ ackSweep（超时扫描）
 src/index.ts   # 启动入口
+scripts/mock-vendor.ts  # 三主机测试的 downstream 供应商模拟器（收到通知后按 X-Notify-Id 自动回调 ack）
 ```
 
 验证：`npm run smoke` 进程内启动 mock 供应商 + 服务，18 条断言覆盖本文档主路径——http_2xx/callback 两种确认模式、503 退避、400 死信、幂等三种路径（重复/冲突）、校验 422、404/409 错误路径。运行结果：18 assertions passed。
+
+三主机联调：见 `docs/three-host-test.md`。跨主机实测曾暴露 ack 竞态（供应商回执快于 worker 写库被 409 拒绝），由此引入 §5.3 竞速安全修订与 TC-C8，修订后全流程（受理 → 投递 → 自动回执 → ACKED）在真实网络边界验证通过。

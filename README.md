@@ -8,7 +8,8 @@
 | --- | --- |
 | [docs/prd.md](docs/prd.md) | PRD：需求背景、功能目标、系统边界、产出预期 |
 | [docs/tech-design.md](docs/tech-design.md) | 技术设计：架构、流程图/时序图、数据模型、接口定义、失败处理与演进路线 |
-| [docs/test-cases.md](docs/test-cases.md) | 测试用例评审：26 条用例及评审结论 |
+| [docs/test-cases.md](docs/test-cases.md) | 测试用例评审：39 条用例及评审结论 |
+| [docs/three-host-test.md](docs/three-host-test.md) | 三主机联调：跨真实网络的全流程验证手册 |
 | [docs/ai-usage.md](docs/ai-usage.md) | AI 使用说明 |
 
 ## 一句话设计
@@ -21,6 +22,7 @@
 npm install
 npm run smoke   # 进程内 mock 供应商 + 18 条断言端到端验证
 npm start       # 启动服务，默认 :3100（PORT 可覆盖，db 默认 notifyhub.db）
+npm run vendor  # 供应商模拟器（三主机测试用，见 docs/three-host-test.md）
 ```
 
 ## 代码结构
